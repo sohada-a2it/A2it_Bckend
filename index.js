@@ -9,26 +9,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Nodemailer transporter (create once)
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.hostinger.com",
-  port: parseInt(process.env.SMTP_PORT) || 587, // 587 is safer for STARTTLS
-  secure: process.env.SMTP_PORT === "465", // true for 465, false for 587
-  auth: {
-    user: process.env.SMTP_USER || process.env.OWNER_EMAIL,
-    pass: process.env.SMTP_PASSWORD,
-  },
-  tls: {
-    rejectUnauthorized: false, // ignore self-signed certs
-  },
-});
-
-// Verify connection at startup
-transporter.verify((err, success) => {
-  if (err) console.error("SMTP connection error:", err);
-  else console.log("SMTP server ready to send emails");
-});
-
 // Email endpoint
 app.post("/api/send-email", async (req, res) => {
   const {
@@ -42,30 +22,42 @@ app.post("/api/send-email", async (req, res) => {
     model,
     type,
     subject,
-    shippingTerm,
+    shippingTerm, // optional
   } = req.body;
 
+  // Nodemailer transporter with Hostinger SMTP
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST || "smtp.hostinger.com",
+    port: parseInt(process.env.SMTP_PORT) || 465,
+    secure: true, // use SSL
+    auth: {
+      user: process.env.SMTP_USER || process.env.OWNER_EMAIL,
+      pass: process.env.SMTP_PASSWORD,
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+  });
+
   try {
-    let emailSubject = "";
-    let textContent = "";
-    let htmlContent = "";
+    let emailSubject, textContent, htmlContent;
 
     if (type === "product_inquiry") {
-      // Product Inquiry
-      emailSubject = `Product Inquiry: ${model || "N/A"} (${quantity || "N/A"} units)`;
+      // Product inquiry (from ContactModal)
+      emailSubject = `Product Inquiry: ${model} (${quantity} units)`;
 
       textContent = `
 PRODUCT INQUIRY
 ================
-Product: ${model || "N/A"}
-Quantity: ${quantity || "N/A"} units
+Product: ${model}
+Quantity: ${quantity} units
 Shipping Terms: ${shippingTerm || "Not provided"}
 ----------------------------
 Customer Details:
 Name: ${name}
 Email: ${email}
 Phone: ${phone || "Not provided"}
-${company ? `Company: ${company}` : ""}
+${company ? `Company: ${company}\n` : ""}
 Address: ${address || "Not provided"}
 ----------------------------
 Customer Message:
@@ -75,12 +67,16 @@ ${message}
 
       htmlContent = `
 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-  <h2 style="color: #e67e22; border-bottom: 2px solid #e67e22; padding-bottom: 5px;">PRODUCT INQUIRY</h2>
+  <h2 style="color: #e67e22; border-bottom: 2px solid #e67e22; padding-bottom: 5px;">
+    PRODUCT INQUIRY
+  </h2>
 
   <div style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
-    <p><strong>Product:</strong> ${model || "N/A"}<br>
-       <strong>Quantity:</strong> ${quantity || "N/A"} units<br>
-       <strong>Shipping Terms:</strong> ${shippingTerm || "Not provided"}</p>
+    <h3 style="margin-top: 0;">
+      <strong>Product:</strong> ${model}<br>
+      <strong>Quantity:</strong> ${quantity} units<br>
+      <strong>Shipping Terms:</strong> ${shippingTerm || "Not provided"}
+    </h3>
   </div>
 
   <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
@@ -120,7 +116,7 @@ ${message}
 </div>
       `;
     } else {
-      // General Inquiry
+      // General inquiry (from ContactPage)
       emailSubject = subject || "New Inquiry from Website";
       textContent = `
 NEW INQUIRY
@@ -129,7 +125,7 @@ Customer Details:
 Name: ${name}
 Email: ${email}
 Phone: ${phone || "Not provided"}
-${company ? `Company: ${company}` : ""}
+${company ? `Company: ${company}\n` : ""}
 ----------------------------
 Customer Message:
 ${message}
@@ -138,7 +134,9 @@ ${message}
 
       htmlContent = `
 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-  <h2 style="color: #e67e22; border-bottom: 2px solid #e67e22; padding-bottom: 5px;">GENERAL INQUIRY</h2>
+  <h2 style="color: #e67e22; border-bottom: 2px solid #e67e22; padding-bottom: 5px;">
+    GENERAL INQUIRY
+  </h2>
 
   <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
     <tr style="background: #e67e22; color: white;">
@@ -185,7 +183,7 @@ ${message}
     res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error sending email:", error);
-    res.status(500).json({ success: false, error: "Failed to send email" });
+    res.status(500).json({ error: "Failed to send email" });
   }
 });
 
