@@ -2,10 +2,34 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
+const rateLimit = require("express-rate-limit"); // npm install express-rate-limit
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 
-// Middleware
+// ============ রেট লিমিট কনফিগারেশন ============
+// প্রতি মিনিটে সর্বোচ্চ ৫টি ইমেল (Hostinger-এর ১০ এর নিচে)
+const emailLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 মিনিট
+  max: 5, // সর্বোচ্চ ৫টি রিকোয়েস্ট প্রতি মিনিটে
+  message: { 
+    error: "Too many requests. Please try again after 1 minute.",
+    limit: "5 requests per minute allowed"
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: false, // সফল রিকোয়েস্টও গণনা হবে
+});
+
+// IP ভিত্তিক রেট লিমিট (যদি একই IP থেকে অনেক রিকোয়েস্ট আসে)
+const ipLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 মিনিট
+  max: 20, // প্রতি IP থেকে সর্বোচ্চ ২০টি রিকোয়েস্ট
+  message: { error: "Too many requests from this IP. Please try again later." }
+});
+
+// ============ Middleware ============
 app.use(cors({
   origin: ['http://localhost:3000', 'https://yourfrontenddomain.com'],
   methods: ['POST', 'GET'],
@@ -13,8 +37,98 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Email endpoint 
-app.post("/api/send-email", async (req, res) => {
+// Logger middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - IP: ${req.ip}`);
+  next();
+});
+
+// ============ ইমেল লগ ফাংশন ============
+function logEmail(data) {
+  const logDir = path.join(__dirname, 'logs');
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir);
+  }
+  
+  const logFile = path.join(logDir, 'email.log');
+  const logEntry = `${new Date().toISOString()} | To: ${data.to} | Subject: ${data.subject} | Type: ${data.type || 'general'}\n`;
+  
+  fs.appendFile(logFile, logEntry, (err) => {
+    if (err) console.error("Log write error:", err);
+  });
+}
+
+// ============ ইমেল ট্রান্সপোর্টার (SMTP পুলিং সহ) ============
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || "smtp.hostinger.com",
+  port: parseInt(process.env.SMTP_PORT) || 465,
+  secure: true,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASSWORD,
+  },
+  pool: true, // কানেকশন পুলিং সক্রিয়
+  maxConnections: 1, // সর্বোচ্চ ১টি কানেকশন
+  maxMessages: 5, // প্রতি কানেকশনে সর্বোচ্চ ৫টি মেইল
+  rateDelta: 20000, // ২০ সেকেন্ড
+  rateLimit: 3, // প্রতি ২০ সেকেন্ডে ৩টি মেইল
+  maxConnections: 1,
+maxMessages: Infinity,
+  tls: {
+    rejectUnauthorized: true, // ডেভেলপমেন্টের জন্য
+  },
+  // কানেকশন টাইমআউট
+  connectionTimeout: 30000, // ৩০ সেকেন্ড
+  greetingTimeout: 30000,
+  socketTimeout: 60000,
+});
+
+// ট্রান্সপোর্টার ভেরিফাই
+transporter.verify((error, success) => {
+  if (error) {
+    console.error("❌ SMTP connection error:", error);
+  } else {
+    console.log("✅ SMTP server is ready to send emails");
+    console.log(`📊 Rate limit: 3 emails per 20 seconds`);
+  }
+});
+
+// ============ ইমেল সেন্ড ফাংশন (রিট্রাই মেকানিজম সহ) ============
+async function sendEmailWithRetry(mailOptions, maxRetries = 3) {
+  let lastError;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`📧 Sending email (attempt ${attempt}/${maxRetries})...`);
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`✅ Email sent successfully! Message ID: ${info.messageId}`);
+      
+      // লগ সংরক্ষণ
+      logEmail({
+        to: mailOptions.to,
+        subject: mailOptions.subject,
+        type: mailOptions.type || 'general'
+      });
+      
+      return info;
+    } catch (error) {
+      lastError = error;
+      console.error(`❌ Attempt ${attempt} failed:`, error.message);
+      
+      if (attempt < maxRetries) {
+        // এক্সপোনেনশিয়াল ব্যাকঅফ
+        const waitTime = Math.pow(2, attempt) * 1000;
+        console.log(`⏳ Waiting ${waitTime/1000} seconds before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
+// ============ ইমেল এন্ডপয়েন্ট ============
+app.post("/api/send-email", emailLimiter, ipLimiter, async (req, res) => {
   const {
     name,
     email,
@@ -26,14 +140,14 @@ app.post("/api/send-email", async (req, res) => {
     shippingTerm,
   } = req.body;
 
-  // Log received data for debugging
-  console.log("Received product inquiry data:", {
+  // Log received data
+  console.log("📨 Received inquiry:", {
     type,
-    model,
-    shippingTerm,
     name,
     email,
-    phone
+    phone,
+    model,
+    shippingTerm
   });
 
   // Validate required fields
@@ -44,30 +158,26 @@ app.post("/api/send-email", async (req, res) => {
     });
   }
 
-  // Nodemailer transporter with Hostinger SMTP
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.hostinger.com",
-    port: parseInt(process.env.SMTP_PORT) || 465,
-    secure: true,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASSWORD,
-    },
-    tls: {
-      rejectUnauthorized: false,
-    },
-  });
+  // Email validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ error: "Invalid email format" });
+  }
+
+  // Phone validation (minimum 10 digits)
+  const phoneDigits = phone.replace(/\D/g, '');
+  if (phoneDigits.length < 10) {
+    return res.status(400).json({ error: "Phone number must have at least 10 digits" });
+  }
 
   try {
     let emailSubject, textContent, htmlContent;
 
-    // Check for product inquiry (case insensitive)
+    // ============ PRODUCT INQUIRY ============
     if (type && type.toLowerCase() === "product_inquiry") {
-      // Set default values if model or shippingTerm are missing
       const planModel = model || 'Not specified';
       const planDetails = shippingTerm || 'Not specified';
       
-      // Create subject with plan info
       emailSubject = subject || `🔔 New Consultation: ${planModel} Interested`;
 
       textContent = `
@@ -194,18 +304,18 @@ ${message || 'No project description provided'}
   </div>
 </body>
 </html>
-      `; 
+      `;
+    } 
+    
+    // ============ BANNER INQUIRY ============
+    else if (type && type.toLowerCase() === "banner_inquiry") {
+      const selectedPackage = model || 'Not specified';
+      const packageDetails = shippingTerm || 'Not specified';
+      const projectDesc = message || 'No project description provided';
+      
+      emailSubject = subject || `🎯 NEW BANNER INQUIRY: ${selectedPackage} - 50% OFF ELIGIBLE`;
 
-if (type && type.toLowerCase() === "banner_inquiry") {
-  // Banner inquiry from hero section
-  const selectedPackage = model || 'Not specified';
-  const packageDetails = shippingTerm || 'Not specified';
-  const projectDesc = message || 'No project description provided';
-  
-  // Create subject with package info
-  emailSubject = subject || `🎯 NEW BANNER INQUIRY: ${selectedPackage} - 50% OFF ELIGIBLE`;
-
-  textContent = `
+      textContent = `
 🔔 NEW BANNER INQUIRY - 50% OFF ELIGIBLE
 ==========================================
 Source: Hero Section Banner Form
@@ -228,9 +338,9 @@ ${projectDesc}
 
 ==========================================
 This customer is eligible for 50% discount on website package!
-  `;
+      `;
 
-  htmlContent = `
+      htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -350,15 +460,14 @@ This customer is eligible for 50% discount on website package!
   </div>
 </body>
 </html>
-  `;
-}
-// Inside the try block, add this after the banner_inquiry condition
+      `;
+    } 
+    
+    // ============ FOOTER INQUIRY ============
+    else if (type && type.toLowerCase() === "footer_inquiry") {
+      emailSubject = subject || `📞 NEW FOOTER CONSULTATION: ${name} - Free Consultation Request`;
 
-if (type && type.toLowerCase() === "footer_inquiry") {
-  // Footer consultation form inquiry
-  emailSubject = subject || `📞 NEW FOOTER CONSULTATION: ${name} - Free Consultation Request`;
-
-  textContent = `
+      textContent = `
 📞 NEW FOOTER CONSULTATION REQUEST
 ==========================================
 Source: Footer Contact Form
@@ -381,9 +490,9 @@ ${message || 'No project description provided'}
 
 ==========================================
 This customer requested a free consultation from the footer form.
-  `;
+      `;
 
-  htmlContent = `
+      htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -422,7 +531,7 @@ This customer requested a free consultation from the footer form.
       <!-- Quick Response Badge -->
       <div style="background: linear-gradient(135deg, #f97316 0%, #dc2626 100%); border-radius: 16px; padding: 20px; margin-bottom: 30px; text-align: center;">
         <div style="display: inline-flex; align-items: center; gap: 10px; background: white; padding: 8px 20px; border-radius: 50px;">
-          <Clock style="width: 16px; height: 16px; color: #f97316;" />
+          <span style="font-size: 16px;">⏰</span>
           <span style="color: #f97316; font-weight: 600; font-size: 14px;">Response within 2 hours</span>
         </div>
       </div>
@@ -510,11 +619,13 @@ This customer requested a free consultation from the footer form.
   </div>
 </body>
 </html>
-  `;
-}
-    } else {
-      // General inquiry (from ContactPage)
+      `;
+    } 
+    
+    // ============ GENERAL INQUIRY ============
+    else {
       emailSubject = subject || "New Inquiry from Website";
+      
       textContent = `
 NEW INQUIRY
 ================
@@ -522,68 +633,150 @@ Customer Details:
 Name: ${name}
 Email: ${email}
 Phone: ${phone || "Not provided"}
-${company ? `Company: ${company}\n` : ""}
 ----------------------------
 Customer Message:
-${message}
+${message || "No message provided"}
 ================
       `;
 
       htmlContent = `
-<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-  <h2 style="color: #e67e22; border-bottom: 2px solid #e67e22; padding-bottom: 5px;">
-    GENERAL INQUIRY
-  </h2>
-
-  <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-    <tr style="background: #e67e22; color: white;">
-      <th colspan="2" style="padding: 10px; text-align: left;">CUSTOMER DETAILS</th>
-    </tr>
-    <tr>
-      <td style="padding: 10px; border: 1px solid #ddd; width: 30%;"><strong>Name:</strong></td>
-      <td style="padding: 10px; border: 1px solid #ddd;">${name}</td>
-    </tr>
-    <tr>
-      <td style="padding: 10px; border: 1px solid #ddd;"><strong>Email:</strong></td>
-      <td style="padding: 10px; border: 1px solid #ddd;">${email}</td>
-    </tr>
-    <tr>
-      <td style="padding: 10px; border: 1px solid #ddd;"><strong>Phone:</strong></td>
-      <td style="padding: 10px; border: 1px solid #ddd;">${phone || "Not provided"}</td>
-    </tr>
-    ${
-      company
-        ? `<tr>
-            <td style="padding: 10px; border: 1px solid #ddd;"><strong>Company:</strong></td>
-            <td style="padding: 10px; border: 1px solid #ddd;">${company}</td>
-          </tr>`
-        : ""
-    }
-  </table>
-
-  <div style="background: #f5f5f5; padding: 15px; border-radius: 5px;">
-    <h4 style="margin-top: 0; color: #e67e22;">CUSTOMER MESSAGE:</h4>
-    <p style="white-space: pre-wrap; margin-bottom: 0;">${message}</p>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>New Website Inquiry</title>
+</head>
+<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+  <div style="background: #f9f9f9; padding: 30px; border-radius: 10px;">
+    <h2 style="color: #e67e22; border-bottom: 2px solid #e67e22; padding-bottom: 10px;">
+      New Website Inquiry
+    </h2>
+    
+    <div style="background: white; padding: 20px; border-radius: 8px; margin-top: 20px;">
+      <h3 style="margin-top: 0; color: #555;">Customer Details:</h3>
+      
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr>
+          <td style="padding: 10px; border-bottom: 1px solid #eee; width: 30%;"><strong>Name:</strong></td>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">${name}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>Email:</strong></td>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">
+            <a href="mailto:${email}" style="color: #e67e22; text-decoration: none;">${email}</a>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>Phone:</strong></td>
+          <td style="padding: 10px; border-bottom: 1px solid #eee;">
+            <a href="tel:${phone}" style="color: #e67e22; text-decoration: none;">${phone || "Not provided"}</a>
+          </td>
+        </tr>
+      </table>
+      
+      <div style="margin-top: 20px; background: #f5f5f5; padding: 15px; border-radius: 5px;">
+        <h4 style="margin-top: 0; color: #e67e22;">Customer Message:</h4>
+        <p style="white-space: pre-wrap; margin-bottom: 0; line-height: 1.6;">${message || "No message provided"}</p>
+      </div>
+      
+      <div style="margin-top: 30px; padding-top: 20px; text-align: center; border-top: 1px solid #eee; color: #999; font-size: 12px;">
+        <p>Received: ${new Date().toLocaleString()}</p>
+        <p>© ${new Date().getFullYear()} Your Company. All rights reserved.</p>
+      </div>
+    </div>
   </div>
-</div>
+</body>
+</html>
       `;
     }
 
-    await transporter.sendMail({
+    // মেইল অপশন তৈরি
+    const mailOptions = {
       from: `"Website Inquiry" <${process.env.SMTP_USER}>`,
       to: process.env.OWNER_EMAIL,
       subject: emailSubject,
       text: textContent,
       html: htmlContent,
+      type: type || 'general' // লগের জন্য
+    };
+
+    // ইমেল পাঠান (রিট্রাই মেকানিজম সহ)
+    await sendEmailWithRetry(mailOptions);
+
+    // সফল রেসপন্স
+    res.status(200).json({ 
+      success: true, 
+      message: "Email sent successfully",
+      timestamp: new Date().toISOString()
     });
 
-    res.status(200).json({ success: true });
   } catch (error) {
-    console.error("Error sending email:", error);
-    res.status(500).json({ error: "Failed to send email" });
+    console.error("❌ Fatal error sending email:", error);
+    
+    // নির্দিষ্ট error message
+    if (error.code === 'EAUTH') {
+      res.status(500).json({ error: "Email authentication failed. Please check SMTP credentials." });
+    } else if (error.code === 'ESOCKET') {
+      res.status(500).json({ error: "Network error. Please try again." });
+    } else if (error.responseCode === 554) {
+      res.status(500).json({ error: "Email rejected. Daily limit might be exceeded." });
+    } else if (error.code === 'ETIMEDOUT') {
+      res.status(500).json({ error: "Connection timeout. Please try again." });
+    } else {
+      res.status(500).json({ error: "Failed to send email. Please try again later." });
+    }
   }
 });
 
-// Server
+// ============ স্ট্যাটাস এন্ডপয়েন্ট ============
+app.get("/api/email-status", (req, res) => {
+  res.status(200).json({
+    status: "active",
+    smtp: {
+      host: process.env.SMTP_HOST || "smtp.hostinger.com",
+      port: parseInt(process.env.SMTP_PORT) || 465,
+      secure: true
+    },
+    limits: {
+      ratePerMinute: 5,
+      maxRetries: 3,
+      poolSize: 1,
+      messagesPerConnection: 5
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ============ হেলথ চেক এন্ডপয়েন্ট ============
+app.get("/api/health", (req, res) => {
+  res.status(200).json({ 
+    status: "OK", 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    endpoints: ["/api/send-email", "/api/email-status", "/api/health"]
+  });
+});
+
+// ============ 404 হ্যান্ডলার ============
+app.use((req, res) => {
+  res.status(404).json({ error: "Endpoint not found" });
+});
+
+// ============ এরর হ্যান্ডলার ============
+app.use((err, req, res, next) => {
+  console.error("Server error:", err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
+// ============ সার্ভার স্টার্ট ============
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log("=".repeat(50));
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📧 Email service: ${process.env.SMTP_USER}`);
+  console.log(`📊 Rate limit: 5 emails per minute`);
+  console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+  console.log("=".repeat(50));
+});
