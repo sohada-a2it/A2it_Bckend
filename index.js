@@ -127,10 +127,10 @@ app.post("/api/send-email", async (req, res) => {
       const planDetails = shippingTerm || 'Not specified';
       
       // Create subject with plan info
-      emailSubject = subject || `🔔 New Consultation: ${planModel} Interested`;
+      emailSubject = subject || `🔔 New Consultation: ${planModel} Interested  - 70% OFF ELIGIBLE`;
 
       textContent = `
-🔔 NEW CONSULTATION INQUIRY
+🔔 NEW CONSULTATION INQUIRY - 70% OFF ELIGIBLE 
 ================================
 Selected Plan: ${planModel}
 Plan Details: ${planDetails}
