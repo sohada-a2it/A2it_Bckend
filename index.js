@@ -127,10 +127,10 @@ app.post("/api/send-email", async (req, res) => {
       const planDetails = shippingTerm || 'Not specified';
       
       // Create subject with plan info
-      emailSubject = subject || `🔔 New Consultation: ${planModel} Interested  - 70% OFF ELIGIBLE`;
+      emailSubject = subject || `🔔 New PRODUCT: ${planModel} Interested - 70% OFF ELIGIBLE`;
 
       textContent = `
-🔔 NEW CONSULTATION INQUIRY - 70% OFF ELIGIBLE 
+🔔 NEW PRODUCT INQUIRY - 70% OFF ELIGIBLE 
 ================================
 Selected Plan: ${planModel}
 Plan Details: ${planDetails}
@@ -262,10 +262,10 @@ ${message || 'No project description provided'}
       const projectDesc = message || 'No project description provided';
       
       // Create subject with package info
-      emailSubject = subject || `🎯 NEW BANNER INQUIRY: ${selectedPackage} - 50% OFF ELIGIBLE`;
+      emailSubject = subject || `🎯 NEW PRODUCT INQUIRY: ${selectedPackage} Interested - 50% OFF ELIGIBLE`;
 
       textContent = `
-🔔 NEW BANNER INQUIRY - 50% OFF ELIGIBLE
+🔔 NEW PRODUCT INQUIRY - 50% OFF ELIGIBLE
 ==========================================
 Source: Hero Section Banner Form
 Time: ${new Date().toLocaleString()}
@@ -413,10 +413,10 @@ This customer is eligible for 50% discount on website package!
     }
     else if (type && type.toLowerCase() === "footer_inquiry") {
       // Footer consultation form inquiry
-      emailSubject = subject || `📞 NEW FOOTER CONSULTATION: ${name} - Free Consultation Request`;
+      emailSubject = subject || `📞 NEW CONSULTATION: ${name} - Free Consultation Request`;
 
       textContent = `
-📞 NEW FOOTER CONSULTATION REQUEST
+📞 NEW CONSULTATION REQUEST
 ==========================================
 Source: Footer Contact Form
 Time: ${new Date().toLocaleString()}
