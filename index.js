@@ -2,63 +2,98 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
+const bodyParser = require("body-parser");
 
 const app = express();
 
-// Middleware
+// Enhanced middleware setup
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://a2itltd.com/'],
-  methods: ['POST', 'GET'],
-  credentials: true
+  origin: ['http://localhost:3000', 'https://a2itltd.com'],
+  methods: ['POST', 'GET', 'OPTIONS'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+
+// Parse various content types with increased limits
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Debug middleware to log all requests
+app.use((req, res, next) => {
+  console.log(`\n📡 ${req.method} Request to: ${req.path}`);
+  console.log('📋 Headers:', {
+    'content-type': req.get('Content-Type'),
+    'origin': req.get('Origin')
+  });
+  console.log('📦 Body:', req.body);
+  next();
+});
 
 // Email endpoint 
 app.post("/api/send-email", async (req, res) => {
-  const {
-    name,
-    email,
-    phone,
-    message,
-    type,
-    subject,
-    model,
-    shippingTerm,
-  } = req.body;
-
-  // Log received data for debugging
-  console.log("Received product inquiry data:", {
-    type,
-    model,
-    shippingTerm,
-    name,
-    email,
-    phone
-  });
-
-  // Validate required fields
-  if (!name || !email || !phone) {
-    return res.status(400).json({ 
-      error: "Missing required fields",
-      required: ["name", "email", "phone"] 
-    });
-  }
-
-  // Nodemailer transporter with Hostinger SMTP
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.hostinger.com",
-    port: parseInt(process.env.SMTP_PORT) || 465,
-    secure: true,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASSWORD,
-    },
-    tls: {
-      rejectUnauthorized: false,
-    },
-  });
-
   try {
+    // Check if body exists
+    if (!req.body || Object.keys(req.body).length === 0) {
+      console.log('❌ Empty request body received');
+      return res.status(400).json({ 
+        error: "Request body is empty",
+        message: "Please provide the required fields in the request body",
+        received: req.body
+      });
+    }
+
+    const {
+      name,
+      email,
+      phone,
+      message,
+      type,
+      subject,
+      model,
+      shippingTerm,
+    } = req.body;
+
+    // Log received data for debugging
+    console.log("📨 Received inquiry data:", {
+      type,
+      model,
+      shippingTerm,
+      name,
+      email,
+      phone,
+      message: message ? message.substring(0, 50) + '...' : 'No message'
+    });
+
+    // Validate required fields
+    if (!name || !email || !phone) {
+      console.log('❌ Missing required fields:', { name, email, phone });
+      return res.status(400).json({ 
+        error: "Missing required fields",
+        received: { name: !!name, email: !!email, phone: !!phone },
+        required: ["name", "email", "phone"] 
+      });
+    }
+
+    // Nodemailer transporter with Hostinger SMTP
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || "smtp.hostinger.com",
+      port: parseInt(process.env.SMTP_PORT) || 465,
+      secure: true,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASSWORD,
+      },
+      tls: {
+        rejectUnauthorized: false,
+      },
+    });
+
+    // Verify SMTP connection
+    await transporter.verify();
+    console.log('✅ SMTP connection verified');
+
     let emailSubject, textContent, htmlContent;
 
     // Check for product inquiry (case insensitive)
@@ -197,15 +232,15 @@ ${message || 'No project description provided'}
       `; 
     } 
     else if (type && type.toLowerCase() === "banner_inquiry") {
-  // Banner inquiry from hero section
-  const selectedPackage = model || 'Not specified';
-  const packageDetails = shippingTerm || 'Not specified';
-  const projectDesc = message || 'No project description provided';
-  
-  // Create subject with package info
-  emailSubject = subject || `🎯 NEW BANNER INQUIRY: ${selectedPackage} - 50% OFF ELIGIBLE`;
+      // Banner inquiry from hero section
+      const selectedPackage = model || 'Not specified';
+      const packageDetails = shippingTerm || 'Not specified';
+      const projectDesc = message || 'No project description provided';
+      
+      // Create subject with package info
+      emailSubject = subject || `🎯 NEW BANNER INQUIRY: ${selectedPackage} - 50% OFF ELIGIBLE`;
 
-  textContent = `
+      textContent = `
 🔔 NEW BANNER INQUIRY - 50% OFF ELIGIBLE
 ==========================================
 Source: Hero Section Banner Form
@@ -228,9 +263,9 @@ ${projectDesc}
 
 ==========================================
 This customer is eligible for 50% discount on website package!
-  `;
+      `;
 
-  htmlContent = `
+      htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -350,15 +385,13 @@ This customer is eligible for 50% discount on website package!
   </div>
 </body>
 </html>
-  `;
-}
-// Inside the try block, add this after the banner_inquiry condition
+      `;
+    }
+    else if (type && type.toLowerCase() === "footer_inquiry") {
+      // Footer consultation form inquiry
+      emailSubject = subject || `📞 NEW FOOTER CONSULTATION: ${name} - Free Consultation Request`;
 
-else if (type && type.toLowerCase() === "footer_inquiry") {
-  // Footer consultation form inquiry
-  emailSubject = subject || `📞 NEW FOOTER CONSULTATION: ${name} - Free Consultation Request`;
-
-  textContent = `
+      textContent = `
 📞 NEW FOOTER CONSULTATION REQUEST
 ==========================================
 Source: Footer Contact Form
@@ -381,9 +414,9 @@ ${message || 'No project description provided'}
 
 ==========================================
 This customer requested a free consultation from the footer form.
-  `;
+      `;
 
-  htmlContent = `
+      htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -422,8 +455,7 @@ This customer requested a free consultation from the footer form.
       <!-- Quick Response Badge -->
       <div style="background: linear-gradient(135deg, #f97316 0%, #dc2626 100%); border-radius: 16px; padding: 20px; margin-bottom: 30px; text-align: center;">
         <div style="display: inline-flex; align-items: center; gap: 10px; background: white; padding: 8px 20px; border-radius: 50px;">
-          <Clock style="width: 16px; height: 16px; color: #f97316;" />
-          <span style="color: #f97316; font-weight: 600; font-size: 14px;">Response within 2 hours</span>
+          <span style="color: #f97316; font-weight: 600; font-size: 14px;">⏱️ Response within 2 hours</span>
         </div>
       </div>
       
@@ -510,8 +542,8 @@ This customer requested a free consultation from the footer form.
   </div>
 </body>
 </html>
-  `;
-}
+      `;
+    }
     else {
       // General inquiry (from ContactPage)
       emailSubject = subject || "New Inquiry from Website";
@@ -522,10 +554,10 @@ Customer Details:
 Name: ${name}
 Email: ${email}
 Phone: ${phone || "Not provided"}
-${company ? `Company: ${company}\n` : ""}
+
 ----------------------------
 Customer Message:
-${message}
+${message || 'No message provided'}
 ================
       `;
 
@@ -551,39 +583,75 @@ ${message}
       <td style="padding: 10px; border: 1px solid #ddd;"><strong>Phone:</strong></td>
       <td style="padding: 10px; border: 1px solid #ddd;">${phone || "Not provided"}</td>
     </tr>
-    ${
-      company
-        ? `<tr>
-            <td style="padding: 10px; border: 1px solid #ddd;"><strong>Company:</strong></td>
-            <td style="padding: 10px; border: 1px solid #ddd;">${company}</td>
-          </tr>`
-        : ""
-    }
   </table>
 
   <div style="background: #f5f5f5; padding: 15px; border-radius: 5px;">
     <h4 style="margin-top: 0; color: #e67e22;">CUSTOMER MESSAGE:</h4>
-    <p style="white-space: pre-wrap; margin-bottom: 0;">${message}</p>
+    <p style="white-space: pre-wrap; margin-bottom: 0;">${message || 'No message provided'}</p>
   </div>
 </div>
       `;
     }
 
-    await transporter.sendMail({
+    // Send email
+    const mailOptions = {
       from: `"Website Inquiry" <${process.env.SMTP_USER}>`,
       to: process.env.OWNER_EMAIL,
       subject: emailSubject,
       text: textContent,
       html: htmlContent,
+    };
+
+    console.log('📤 Sending email to:', process.env.OWNER_EMAIL);
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Email sent successfully:', info.messageId);
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Email sent successfully',
+      messageId: info.messageId 
     });
 
-    res.status(200).json({ success: true });
   } catch (error) {
-    console.error("Error sending email:", error);
-    res.status(500).json({ error: "Failed to send email" });
+    console.error("❌ Error sending email:", error);
+    res.status(500).json({ 
+      error: "Failed to send email",
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
+});
+
+// Test endpoint to verify server is working
+app.get("/api/test", (req, res) => {
+  res.json({ 
+    message: "Server is running!", 
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      sendEmail: "/api/send-email (POST)",
+      test: "/api/test (GET)"
+    }
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: "Route not found" });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('🔥 Server Error:', err);
+  res.status(500).json({ 
+    error: "Internal server error",
+    message: err.message 
+  });
 });
 
 // Server
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`\n🚀 Server running on port ${PORT}`);
+  console.log(`📝 Test endpoint: http://localhost:${PORT}/api/test`);
+  console.log(`📧 Email endpoint: http://localhost:${PORT}/api/send-email (POST)\n`);
+});
