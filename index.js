@@ -8,7 +8,7 @@ const app = express();
 
 // Enhanced middleware setup
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://a2itltd.com'],
+  origin: ['http://localhost:3000', 'https://a2itltd.com', 'https://www.a2itltd.com'],
   methods: ['POST', 'GET', 'OPTIONS'],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -20,15 +20,31 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Debug middleware to log all requests
-app.use((req, res, next) => {
-  console.log(`\n📡 ${req.method} Request to: ${req.path}`);
-  console.log('📋 Headers:', {
-    'content-type': req.get('Content-Type'),
-    'origin': req.get('Origin')
+// Root route for testing
+app.get("/", (req, res) => {
+  res.json({ 
+    message: "API is running", 
+    status: "active",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    endpoints: {
+      test: "/api/test",
+      sendEmail: "/api/send-email (POST)",
+      all: "All routes are prefixed with /api"
+    }
   });
-  console.log('📦 Body:', req.body);
-  next();
+});
+
+// Test endpoint
+app.get("/api/test", (req, res) => {
+  res.json({ 
+    message: "API is working!", 
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      sendEmail: "/api/send-email (POST)",
+      test: "/api/test (GET)"
+    }
+  });
 });
 
 // Email endpoint 
@@ -39,8 +55,7 @@ app.post("/api/send-email", async (req, res) => {
       console.log('❌ Empty request body received');
       return res.status(400).json({ 
         error: "Request body is empty",
-        message: "Please provide the required fields in the request body",
-        received: req.body
+        message: "Please provide the required fields in the request body"
       });
     }
 
@@ -73,6 +88,15 @@ app.post("/api/send-email", async (req, res) => {
         error: "Missing required fields",
         received: { name: !!name, email: !!email, phone: !!phone },
         required: ["name", "email", "phone"] 
+      });
+    }
+
+    // Check for missing SMTP credentials
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASSWORD) {
+      console.error('❌ SMTP credentials missing in environment variables');
+      return res.status(500).json({
+        error: "Server configuration error",
+        message: "Email service not properly configured"
       });
     }
 
@@ -616,27 +640,20 @@ ${message || 'No message provided'}
     console.error("❌ Error sending email:", error);
     res.status(500).json({ 
       error: "Failed to send email",
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: error.message
     });
   }
 });
 
-// Test endpoint to verify server is working
-app.get("/api/test", (req, res) => {
-  res.json({ 
-    message: "Server is running!", 
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      sendEmail: "/api/send-email (POST)",
-      test: "/api/test (GET)"
-    }
-  });
-});
-
-// 404 handler
+// 404 handler - This should be after all routes
 app.use((req, res) => {
-  res.status(404).json({ error: "Route not found" });
+  console.log('404 Not Found:', req.method, req.path);
+  res.status(404).json({ 
+    error: "Route not found",
+    path: req.path,
+    method: req.method,
+    message: "The requested endpoint does not exist"
+  });
 });
 
 // Error handling middleware
@@ -648,10 +665,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Server
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`\n🚀 Server running on port ${PORT}`);
-  console.log(`📝 Test endpoint: http://localhost:${PORT}/api/test`);
-  console.log(`📧 Email endpoint: http://localhost:${PORT}/api/send-email (POST)\n`);
-});
+// For local development
+if (require.main === module) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 Server running on port ${PORT}`);
+    console.log(`📝 Test endpoint: http://localhost:${PORT}/api/test`);
+    console.log(`📧 Email endpoint: http://localhost:${PORT}/api/send-email (POST)\n`);
+  });
+}
+
+// Export for Vercel serverless
+module.exports = app;
